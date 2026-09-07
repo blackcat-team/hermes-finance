@@ -1,0 +1,64 @@
+# Native Hermes user plugin manifest (v2) for the Finance fast-path.
+#
+# Production location: ~/.hermes/plugins/blackcat-finance-fastpath/
+#
+# The plugin owns only: native Telegram event access, exact Finance
+# topic routing, transport provenance extraction, subprocess invocation,
+# and a tiny confirmation/error reply. It owns no finance parsing, no
+# ledger persistence, no reports, no SQLite access, and no LLM
+# decisions.
+#
+# Fail-closed: every setting below is required and has NO default.
+# When any setting is missing or invalid the plugin logs an
+# actionable warning and registers no Telegram handler at all, so
+# ordinary Hermes routing continues unchanged.
+manifest_version: 2
+name: blackcat-finance-fastpath
+version: 1.0.0
+description: >-
+  Tiny Telegram Finance topic fast-path. Matches only the exact
+  configured Telegram Finance chat and topic thread and only message
+  text starting with a signed amount (+<digit> or -<digit>), then
+  delegates the exact message to the standalone hermes-finance CLI
+  over an argv subprocess and replies with a fixed confirmation or
+  error string.
+platforms:
+  - telegram
+config_schema:
+  type: object
+  additionalProperties: false
+  required:
+    - cli_path
+    - database_path
+    - chat_id
+    - thread_id
+    - business_timezone
+  properties:
+    cli_path:
+      type: string
+      description: >-
+        Absolute executable path to the standalone hermes-finance CLI.
+        Required; no default.
+    database_path:
+      type: string
+      description: >-
+        Finance-owned SQLite file path. Passed only to the child CLI
+        as the HERMES_FINANCE_DB_PATH environment variable; the plugin
+        itself never opens the database. Required; no default.
+    chat_id:
+      type: integer
+      description: >-
+        Exact Telegram Finance chat or supergroup id. Required; no
+        default.
+    thread_id:
+      type: integer
+      minimum: 1
+      description: >-
+        Exact Telegram Finance topic id (native message_thread_id).
+        Required; no default.
+    business_timezone:
+      type: string
+      description: >-
+        IANA timezone identifier (for example Europe/Moscow) used to
+        derive the transaction date from the native Telegram message
+        timestamp. Required; no default.

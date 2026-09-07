@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-finance"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+]
+
+[project.scripts]
+hermes-finance = "hermes_finance.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+files = ["src", "tests"]
+# The standalone Hermes user plugin in this exact directory runs inside
+# the Hermes host (with the python-telegram-bot SDK), not in this finance
+# venv, and its hyphenated plugin directory is not a Python package name.
+# Only that exact plugin directory is excluded from mypy; every other
+# present or future integration stays fully type-checked.
+exclude = ['^integrations[/\\]hermes[/\\]plugins[/\\]blackcat-finance-fastpath[/\\]']
