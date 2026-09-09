@@ -235,16 +235,70 @@ class TestInvalidInput:
     def test_currency_symbol(self) -> None:
         parse_err("+$10 Работа Проект A")
 
-    def test_unsupported_usd_currency_token(self) -> None:
-        # Must NOT be reinterpreted as category="USD".
-        error = parse_err("+25 USD Работа Проект A")
-        assert "USD" in str(error)
+    def test_separated_uppercase_usd_token_is_a_category(self) -> None:
+        # Category semantics win in the separated position: a separated
+        # uppercase ASCII token is never guessed to be a currency.
+        result = parse_ok("+25 USD Работа Проект A")
+        assert result.category == "USD"
+        assert result.source == "Работа Проект A"
 
-    def test_unsupported_currency_like_uppercase_token(self) -> None:
-        parse_err("+25 EUR Работа Проект A")
+    def test_separated_uppercase_eur_token_is_a_category(self) -> None:
+        result = parse_ok("+25 EUR Работа Проект A")
+        assert result.category == "EUR"
+        assert result.source == "Работа Проект A"
 
-    def test_unsupported_currency_like_token_four_letters(self) -> None:
-        parse_err("+25 USDC Работа Проект A")
+    def test_separated_uppercase_four_letter_token_is_a_category(self) -> None:
+        result = parse_ok("+25 USDC Работа Проект A")
+        assert result.category == "USDC"
+        assert result.source == "Работа Проект A"
+
+    def test_uppercase_ascii_categories_are_valid(self) -> None:
+        # Regression (v1.0.1 slice A): separated uppercase ASCII tokens
+        # are categories, not unsupported currencies. AI was previously
+        # rejected by the broad [A-Z]{2,6} currency heuristic.
+        for category in ("AI", "API", "VPN", "VDS", "BTC", "ETH"):
+            result = parse_ok(f"-21 {category} ChatGPT")
+            assert result.direction is Direction.EXPENSE
+            assert result.amount_usdt == Decimal(21)
+            assert result.category == category
+            assert result.source == "ChatGPT"
+            assert result.comment is None
+
+    def test_uppercase_category_with_comment_regression(self) -> None:
+        # The exact observed production failure: "-21 AI ChatGPT |
+        # продление" must parse with category "AI".
+        result = parse_ok("-21 AI ChatGPT | продление")
+        assert result.direction is Direction.EXPENSE
+        assert result.amount_usdt == Decimal(21)
+        assert result.category == "AI"
+        assert result.source == "ChatGPT"
+        assert result.comment == "продление"
+
+    def test_uppercase_category_after_glued_usdt_is_preserved(self) -> None:
+        result = parse_ok("-21USDT AI ChatGPT | продление")
+        assert result.direction is Direction.EXPENSE
+        assert result.amount_usdt == Decimal(21)
+        assert result.category == "AI"
+        assert result.source == "ChatGPT"
+        assert result.comment == "продление"
+
+    def test_uppercase_category_after_separated_usdt_is_preserved(self) -> None:
+        result = parse_ok("-21 USDT AI ChatGPT | продление")
+        assert result.direction is Direction.EXPENSE
+        assert result.amount_usdt == Decimal(21)
+        assert result.category == "AI"
+        assert result.source == "ChatGPT"
+        assert result.comment == "продление"
+
+    def test_glued_uppercase_currency_like_token_is_still_rejected(self) -> None:
+        # Category syntax is impossible in the glued position: strict
+        # rejection is preserved there.
+        error = parse_err("-21BTC ChatGPT")
+        assert type(error) is TransactionParseError
+
+    def test_glued_unknown_uppercase_token_is_still_rejected(self) -> None:
+        error = parse_err("-21XYZ Foo")
+        assert type(error) is TransactionParseError
 
     def test_unsupported_currency_token_glued_to_amount(self) -> None:
         parse_err("-10USD Инфраструктура Хостинг")

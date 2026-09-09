@@ -25,6 +25,12 @@ Covers ``integrations/hermes/plugins/blackcat-finance-fastpath/``:
   child and the parent ``os.environ`` is not mutated
 - UX: the three fixed replies and the generic failure for every
   failure mode, with no internal detail exposed to Telegram
+- reconnect rewiring (v1.0.1 slice B): the same registered platform
+  factory safely wires successive fresh PTB Applications (initial
+  connect, then a rebuilt adapter after a reconnect) and each
+  application independently receives the Finance scoped handler; the
+  plugin owns no mutable state that could bind the handler to the
+  first adapter/application
 - pyproject: the mypy exclusion for the hyphenated Hermes-host plugin
   directory is anchored to exactly that directory and never
   blanket-excludes ``integrations/`` or any unrelated integration
@@ -1029,3 +1035,144 @@ def test_manifest_uses_manifest_version_2_without_apiversion() -> None:
     match = re.search(r"(?m)^manifest_version:\s*(\d+)\s*$", manifest)
     assert match is not None
     assert match.group(1) == "2"
+
+
+# ------------------------------------------------------------------
+# Reconnect rewiring (v1.0.1 slice B)
+# ------------------------------------------------------------------
+
+
+def _two_wired_applications(
+    monkeypatch: MonkeyPatch,
+) -> tuple[ModuleType, FakeApplication, FakeApplication]:
+    """Register the plugin once, then wire the factory into two fresh
+    Applications, modeling the Hermes reconnect lifecycle.
+
+    The initial ``TelegramAdapter.connect()`` invokes the registered
+    factory against Application A. After a fatal platform error the
+    reconnect runner rebuilds the adapter, whose ``connect()`` invokes
+    the SAME registered factory against a fresh Application B.
+    """
+    plugin, _, factory = _registered_factory(monkeypatch)
+    application_a = _install_fake_ptb(monkeypatch)
+    factory(application_a, object())
+    application_b = _install_fake_ptb(monkeypatch)
+    factory(application_b, object())
+    return plugin, application_a, application_b
+
+
+def test_factory_rewires_successive_fresh_applications(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The same registered factory wires both the initial and the
+    rebuilt (reconnect) Application, each with exactly one handler."""
+    _, application_a, application_b = _two_wired_applications(monkeypatch)
+    assert len(application_a.handlers) == 1
+    assert len(application_b.handlers) == 1
+
+
+def test_rewired_handlers_are_independent_objects(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """No handler object, filter, or callback is shared or re-bound
+    between the initial Application and the reconnect Application."""
+    _, application_a, application_b = _two_wired_applications(monkeypatch)
+    handler_a = application_a.handlers[0]
+    handler_b = application_b.handlers[0]
+    assert handler_a is not handler_b
+    assert handler_a.message_filter is not handler_b.message_filter
+    assert handler_a.callback is not handler_b.callback
+    # Rewiring the reconnect Application does not mutate the initial one.
+    assert len(application_a.handlers) == 1
+    assert application_a.handlers[0] is handler_a
+
+
+def test_both_wired_handlers_keep_the_scoped_routing_semantics(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The handler on each Application independently matches only the
+    exact configured Finance chat/topic with a candidate prefix."""
+    _, application_a, application_b = _two_wired_applications(monkeypatch)
+    for application in (application_a, application_b):
+        message_filter = application.handlers[0].message_filter
+        assert message_filter.filter(_native_message()) is True
+        assert (
+            message_filter.filter(
+                _native_message(text="+25 Работа Проект A", chat_id=-1009999999999)
+            )
+            is False
+        )
+        assert (
+            message_filter.filter(_native_message(text="+25 Работа Проект A", thread_id=99))
+            is False
+        )
+        assert message_filter.filter(_native_message(text="Сколько заработал?")) is False
+
+
+def test_rewired_callback_invokes_the_cli_from_the_fresh_application(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A message routed through the reconnect Application's handler
+    reaches the finance CLI exactly like on the initial Application."""
+    plugin, application_a, application_b = _two_wired_applications(monkeypatch)
+    calls: list[SpawnCall] = []
+    _install_spawn_capture(
+        monkeypatch,
+        plugin,
+        calls,
+        result=(0, b'{"disposition": "CREATED", "transaction_id": "t-2"}', b""),
+    )
+    message = _native_message()
+    asyncio.run(application_b.handlers[0].callback(FakeUpdate(9002, message), None))
+    assert len(calls) == 1
+    assert message.replies == [RESPONSE_CREATED]
+    # The initial application's callback is equally alive and independent.
+    message_a = _native_message(message_id=556)
+    asyncio.run(application_a.handlers[0].callback(FakeUpdate(9003, message_a), None))
+    assert len(calls) == 2
+    assert message_a.replies == [RESPONSE_CREATED]
+
+
+def test_plugin_owns_no_rebindable_module_state() -> None:
+    """No function in the plugin rebinds or declares module-level state.
+
+    The platform factory must stay a pure function of its captured
+    frozen config plus the passed application: there is no ``global``/
+    ``nonlocal`` rebinding anywhere and no module-level assignment
+    through an attribute or subscript target that a factory invocation
+    could accumulate per-adapter state in. This is the structural half
+    of the proof that the plugin cannot bind its handler to the first
+    adapter/application.
+    """
+    tree = ast.parse(PLUGIN_INIT.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        assert not isinstance(node, ast.Global)
+        assert not isinstance(node, ast.Nonlocal)
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                assert isinstance(target, ast.Name)
+        elif isinstance(node, ast.AnnAssign):
+            assert isinstance(node.target, ast.Name)
+
+
+def test_factory_configuration_is_captured_in_a_frozen_dataclass(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The only state the factory closes over is immutable.
+
+    ``_make_platform_factory`` captures exactly the validated frozen
+    ``_FastPathConfig``; the config cannot be mutated after capture, so
+    successive factory invocations against fresh Applications are
+    behaviorally identical.
+    """
+    plugin = _load_plugin(monkeypatch)
+    ctx = FakeCtx(dict(VALID_SETTINGS))
+    plugin.register(ctx)
+    assert len(ctx.platform_registrations) == 1
+    factory = ctx.platform_registrations[0][1]
+    closure_cells = [c.cell_contents for c in (factory.__closure__ or [])]
+    configs = [value for value in closure_cells if type(value) is plugin._FastPathConfig]
+    assert len(closure_cells) == 1
+    assert len(configs) == 1
+    assert configs[0].__dataclass_params__.frozen

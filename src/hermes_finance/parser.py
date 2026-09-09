@@ -19,17 +19,23 @@ Supported grammar
   Exponent notation, thousands separators, commas and currency symbols are
   rejected. Full ``Decimal`` precision is preserved via
   :func:`hermes_finance.domain.normalize_usdt_amount`.
-- ``USDT``: optional currency token directly attached to the amount or
-  separated by whitespace, matched ASCII case-insensitively via the
-  explicitly ASCII-bounded pattern ``[Uu][Ss][Dd][Tt]``. Only ASCII
-  spellings of U/S/D/T are accepted: Unicode case-conversion lookalikes
-  such as ``ſ`` (U+017F LATIN SMALL LETTER LONG S, which ``str.upper``
-  maps to ``S``) are rejected as unsupported currency tokens. No other
-  currency is accepted; obvious unsupported currency tokens immediately
-  following the amount are rejected rather than reinterpreted as the
-  category.
-- ``category``: the first whitespace-separated token after the amount (and
-  the optional USDT token).
+- ``USDT``: the only recognized optional currency token, either glued
+  directly to the amount or separated by whitespace, matched ASCII
+  case-insensitively via the explicitly ASCII-bounded pattern
+  ``[Uu][Ss][Dd][Tt]``. Only ASCII spellings of U/S/D/T are accepted:
+  Unicode case-conversion lookalikes such as ``ſ`` (U+017F LATIN SMALL
+  LETTER LONG S, which ``str.upper`` maps to ``S``) are rejected as
+  unsupported currency lookalikes instead of being reinterpreted as a
+  category. No other currency token is ever guessed. Non-USDT text
+  GLUED directly to the amount is malformed and rejected, because
+  category syntax is impossible in that position (``-21BTC ChatGPT``).
+  A SEPARATED token after the amount and the optional separated USDT
+  is always the category, even when it is an uppercase ASCII token such
+  as ``AI``, ``VPN`` or ``BTC``: the grammar is ambiguous between a
+  currency and a category in that position, and category semantics win.
+- ``category``: the first whitespace-separated token after the amount
+  (and the optional USDT token). Uppercase ASCII categories such as
+  ``AI``, ``API``, ``VPN``, ``VDS``, ``BTC`` and ``ETH`` are valid.
 - ``source``: all remaining tokens before the optional comment delimiter,
   joined with single spaces.
 - ``|``: optional comment delimiter. Everything after the *first* ``|`` is
@@ -85,8 +91,12 @@ _USDT_ASCII_RE: Final[re.Pattern[str]] = re.compile(r"[Uu][Ss][Dd][Tt]")
 _AMOUNT_RE: Final[re.Pattern[str]] = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 
 # Bounded, deterministic unsupported-currency heuristic: an all-uppercase
-# ASCII token of 2 to 6 letters immediately following the amount that is not
-# the supported USDT token. No currency database is involved.
+# ASCII token of 2 to 6 letters glued directly to the amount (no
+# whitespace separator) that is not the supported USDT token. No currency
+# database is involved. This heuristic is applied ONLY in the glued
+# position, where category syntax is impossible; a separated token with
+# the same shape is a valid category (AI, VPN, BTC, ...), so the
+# heuristic is never applied there.
 _CURRENCY_LIKE_RE: Final[re.Pattern[str]] = re.compile(r"[A-Z]{2,6}")
 
 _SIGN_TO_DIRECTION: Final[dict[str, Direction]] = {
@@ -196,10 +206,15 @@ def parse_transaction_input(text: str) -> ParsedTransactionInput:
     tokens = head.split()
     if tokens and _is_ascii_usdt(tokens[0]):
         tokens = tokens[1:]
-    elif tokens and (
-        _CURRENCY_LIKE_RE.fullmatch(tokens[0]) or _is_non_ascii_usdt_lookalike(tokens[0])
-    ):
-        raise TransactionParseError(f"unsupported currency token {tokens[0]!r}; only USDT is accepted")
+    elif tokens and _is_non_ascii_usdt_lookalike(tokens[0]):
+        # Unicode case-conversion lookalikes of the USDT token are never
+        # accepted as the currency and never silently reinterpreted as
+        # a category. Every other separated token — including an
+        # uppercase ASCII token such as "AI", "VPN" or "BTC" — is the
+        # category: no currency guessing happens in this position.
+        raise TransactionParseError(
+            f"unsupported currency token {tokens[0]!r}; only USDT is accepted"
+        )
 
     if not tokens:
         raise TransactionParseError("category and source are missing after the amount")
