@@ -8,22 +8,43 @@
 # ledger persistence, no reports, no SQLite access, and no LLM
 # decisions.
 #
+# Two independent delivery paths share one ingest core:
+#
+# - native Telegram fast-path (PRIMARY): the registered "telegram"
+#   platform handler factory wires a scoped PTB MessageHandler into
+#   the adapter Application; fastest path, unchanged semantics.
+# - gateway pre-dispatch recovery fallback (FAIL-SAFE): the registered
+#   synchronous pre_gateway_dispatch hook consumes in-scope Finance
+#   candidates before auth/pairing/agent dispatch and processes them
+#   in a plugin-owned async task on the running loop, so Finance
+#   stays deterministic even if a Telegram adapter reconnect/rebuild
+#   temporarily loses the native platform handler wiring. Hermes
+#   reconnect itself is NOT fixed; this is a Finance-side fail-safe
+#   only.
+#
 # Fail-closed: every setting below is required and has NO default.
 # When any setting is missing or invalid the plugin logs an
-# actionable warning and registers no Telegram handler at all, so
-# ordinary Hermes routing continues unchanged.
+# actionable warning and registers neither the Telegram handler nor
+# the gateway fallback hook, so ordinary Hermes routing continues
+# unchanged.
 manifest_version: 2
 name: blackcat-finance-fastpath
-version: 1.0.0
+version: 1.0.1
 description: >-
-  Tiny Telegram Finance topic fast-path. Matches only the exact
-  configured Telegram Finance chat and topic thread and only message
-  text starting with a signed amount (+<digit> or -<digit>), then
-  delegates the exact message to the standalone hermes-finance CLI
-  over an argv subprocess and replies with a fixed confirmation or
-  error string.
+  Tiny Telegram Finance topic fast-path with a resilient gateway
+  fallback. Matches only the exact configured Telegram Finance chat
+  and topic thread and only message text starting with a signed
+  amount (+<digit> or -<digit>), then delegates the exact message to
+  the standalone hermes-finance CLI over an argv subprocess and
+  replies with a fixed confirmation or error string. The native
+  Telegram platform handler stays the primary fast path; the
+  pre_gateway_dispatch hook is an independent fail-safe that keeps
+  Finance deterministic even if the native handler wiring disappears
+  after a Telegram adapter reconnect.
 platforms:
   - telegram
+hooks:
+  - pre_gateway_dispatch
 config_schema:
   type: object
   additionalProperties: false
