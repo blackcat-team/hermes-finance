@@ -45,12 +45,14 @@ FLOW_RECEIVED_AT_TEXT: Final[str] = "2026-08-05T09:15:30+05:00"
 
 #: The finance test venv deliberately ships no IANA tz database (the
 #: established stage-F5 test convention), so a bounded mapping provides
-#: the identifiers these tests need while every unknown key still
-#: raises the real ``ZoneInfoNotFoundError`` through the real
-#: ``ZoneInfo``. The offsets are the exact ones the tested periods
-#: need: Europe/Moscow is fixed UTC+3, Asia/Bangkok is fixed UTC+7, and
-#: America/New_York uses its September daylight offset (UTC-4).
-_REAL_ZONEINFO: Final = zoneinfo.ZoneInfo
+#: the identifiers these tests need while every unknown key raises the
+#: real ``ZoneInfoNotFoundError``. The offsets are the exact ones the
+#: tested periods need: Europe/Moscow is fixed UTC+3, Asia/Bangkok is
+#: fixed UTC+7, and America/New_York uses its September daylight
+#: offset (UTC-4). The mapping is deliberately exhaustive: no key is
+#: ever delegated to the host/system timezone database, so the tests
+#: stay deterministic even on hosts whose tzdata resolves extra keys
+#: (for example a lowercase "utc").
 _BOUNDED_IANA_ZONES: Final[dict[str, timezone]] = {
     "UTC": UTC,
     "Europe/Moscow": timezone(timedelta(hours=3)),
@@ -60,20 +62,22 @@ _BOUNDED_IANA_ZONES: Final[dict[str, timezone]] = {
 
 
 def _bounded_zoneinfo(key: str) -> tzinfo:
-    """Resolve the bounded test identifiers, delegate the rest."""
+    """Resolve the bounded test identifiers, reject every other key."""
     if key in _BOUNDED_IANA_ZONES:
         return _BOUNDED_IANA_ZONES[key]
-    return _REAL_ZONEINFO(key)
+    raise zoneinfo.ZoneInfoNotFoundError(f"No time zone found with key {key!r}")
 
 
 @pytest.fixture
 def bounded_tz_database(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``zoneinfo.ZoneInfo`` provide the bounded test identifiers.
+    """Make ``zoneinfo.ZoneInfo`` provide only the bounded test identifiers.
 
     The CLI resolves ``--timezone`` through ``zoneinfo.ZoneInfo``
     attribute access at invocation time, so patching the module
-    attribute cleanly replaces the lookup for the bounded identifiers
-    while unknown keys keep failing through the real lookup.
+    attribute cleanly replaces the lookup: the bounded identifiers
+    resolve to their fixed offsets and every unknown key raises
+    ``ZoneInfoNotFoundError`` without ever consulting the host or
+    system timezone database.
     """
     monkeypatch.setattr(zoneinfo, "ZoneInfo", _bounded_zoneinfo)
 
